@@ -1,3 +1,4 @@
+import "./globals.css";
 export const metadata = {
   title: 'HackMesa Project',
   description: 'Created for the hackathon',
