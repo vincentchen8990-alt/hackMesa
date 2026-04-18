@@ -57,7 +57,6 @@ def register():
         # Handle duplicate username
         return jsonify({"error": "Username already exists"}), 400
 
-
 # Run the app
 if __name__ == '__main__':
     app.run(debug=True)
