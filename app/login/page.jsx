@@ -1,10 +1,13 @@
 "use client";
 
+import { useRouter } from "next/navigation";
 import { useState } from "react";
 import Link from "next/link";
 import { supabase } from "../../lib/supabaseClient";
 
 export default function LoginPage() {
+  const router = useRouter();
+
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [message, setMessage] = useState("");
@@ -29,6 +32,7 @@ export default function LoginPage() {
     setMessage("Login successful.");
     console.log("session:", data.session);
     setLoading(false);
+    router.push("/map");
   }
 
   return (

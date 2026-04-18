@@ -5,6 +5,10 @@ import "leaflet/dist/leaflet.css";
 
 export default function Map() {
   const mapRef = useRef<HTMLDivElement | null>(null);
+  const mapInstanceRef = useRef<any>(null);
+  const geoJsonLayerRef = useRef<any>(null);
+  const legendRef = useRef<any>(null);
+
   const [selected, setSelected] = useState<any>(null);
 
   function formatNumber(x: number | undefined) {
@@ -13,27 +17,42 @@ export default function Map() {
   }
 
   useEffect(() => {
-    let map: any;
-    let geoJsonLayer: any;
+    let cancelled = false;
 
     async function initMap() {
       if (!mapRef.current) return;
+      if (mapInstanceRef.current) return;
 
       const L = (await import("leaflet")).default;
 
-      map = L.map(mapRef.current, {
+      if (cancelled || !mapRef.current || mapInstanceRef.current) return;
+
+      // 保险处理：开发模式 / 热更新时，防止旧 leaflet id 残留
+      const container = mapRef.current as any;
+      if (container._leaflet_id) {
+        container._leaflet_id = null;
+      }
+
+      const map = L.map(mapRef.current, {
         zoomControl: true,
       }).setView([34.05, -118.25], 9);
 
-      L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png", {
-        attribution:
-          '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
-        subdomains: "abcd",
-        maxZoom: 20,
-      }).addTo(map);
+      mapInstanceRef.current = map;
+
+      L.tileLayer(
+        "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png",
+        {
+          attribution:
+            '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
+          subdomains: "abcd",
+          maxZoom: 20,
+        }
+      ).addTo(map);
 
       const res = await fetch("/areas.geojson");
       const data = await res.json();
+
+      if (cancelled || !mapInstanceRef.current) return;
 
       const features = data.features ?? [];
 
@@ -91,23 +110,23 @@ export default function Map() {
       }
 
       function getDefaultStyle(feature: any, selectedFeature?: any) {
-      const p = feature?.properties ?? {};
-      const treeCount = Number(p.tree_count);
+        const p = feature?.properties ?? {};
+        const treeCount = Number(p.tree_count);
 
-      const selectedId = getFeatureId(selectedFeature?.properties ?? {});
-      const featureId = getFeatureId(p);
+        const selectedId = getFeatureId(selectedFeature?.properties ?? {});
+        const featureId = getFeatureId(p);
 
-      return {
-        stroke: true,
-        color: String(featureId) === String(selectedId) ? "#111111" : "#ffffff",
-        weight: String(featureId) === String(selectedId) ? 3 : 1,
-        fill: true,
-        fillColor: getTreeColor(treeCount),
-        fillOpacity: 0.35,
-      };
-    }
+        return {
+          stroke: true,
+          color: String(featureId) === String(selectedId) ? "#111111" : "#ffffff",
+          weight: String(featureId) === String(selectedId) ? 3 : 1,
+          fill: true,
+          fillColor: getTreeColor(treeCount),
+          fillOpacity: 0.35,
+        };
+      }
 
-      geoJsonLayer = L.geoJSON(data, {
+      const geoJsonLayer = L.geoJSON(data, {
         style: (feature: any) => getDefaultStyle(feature, null),
 
         onEachFeature: (feature: any, layer: any) => {
@@ -141,7 +160,6 @@ export default function Map() {
           layer.on({
             click: () => {
               setSelected(feature);
-
               geoJsonLayer.setStyle((f: any) => getDefaultStyle(f, feature));
             },
             mouseover: (e: any) => {
@@ -159,7 +177,11 @@ export default function Map() {
       });
 
       geoJsonLayer.addTo(map);
-      map.fitBounds(geoJsonLayer.getBounds());
+      geoJsonLayerRef.current = geoJsonLayer;
+
+      if (geoJsonLayer.getBounds().isValid()) {
+        map.fitBounds(geoJsonLayer.getBounds());
+      }
 
       const legend = new L.Control({ position: "topright" });
 
@@ -200,12 +222,28 @@ export default function Map() {
       };
 
       legend.addTo(map);
+      legendRef.current = legend;
     }
 
     initMap();
 
     return () => {
-      if (map) map.remove();
+      cancelled = true;
+
+      if (legendRef.current) {
+        legendRef.current.remove();
+        legendRef.current = null;
+      }
+
+      if (geoJsonLayerRef.current) {
+        geoJsonLayerRef.current.remove();
+        geoJsonLayerRef.current = null;
+      }
+
+      if (mapInstanceRef.current) {
+        mapInstanceRef.current.remove();
+        mapInstanceRef.current = null;
+      }
     };
   }, []);
 
@@ -214,193 +252,173 @@ export default function Map() {
   function getPanelCategory() {
     const treeCount = Number(p.tree_count);
     if (Number.isNaN(treeCount)) return "No Data";
-    return treeCount <= 0
-      ? "Very Low"
-      : p.tree_count != null
-      ? "Selected"
-      : "No Data";
+    return treeCount <= 0 ? "Very Low" : p.tree_count != null ? "Selected" : "No Data";
   }
+
   return (
-  <div style={{ display: "flex", width: "100%", height: "100vh" }}>
-
-   {/* ✅ SIDEBAR */}
-<div
-  style={{
-    width: "420px",
-    background: "#f7f9fa",
-    borderRight: "1px solid #d9d9d9",
-    overflowY: "auto",
-    fontFamily: "Arial, Helvetica, sans-serif",
-    color: "#222",
-  }}
->
-  {/* HEADER */}
-  <div
-    style={{
-      background: "#2db7ad",
-      color: "white",
-      padding: "26px 22px",
-      fontSize: "20px",
-      fontWeight: 700,
-    }}
-  >
-    Tree OS
-  </div>
-
-  <div style={{ padding: "24px 22px" }}>
-    {!selected ? (
-      <div style={{ fontSize: "16px", color: "#555" }}>
-        Click an area on the map to see details.
-      </div>
-    ) : (
-      <>
-        {/* AREA NAME */}
+    <div style={{ display: "flex", width: "100%", height: "100vh" }}>
+      <div
+        style={{
+          width: "420px",
+          background: "#f7f9fa",
+          borderRight: "1px solid #d9d9d9",
+          overflowY: "auto",
+          fontFamily: "Arial, Helvetica, sans-serif",
+          color: "#222",
+        }}
+      >
         <div
           style={{
-            fontSize: "22px",
+            background: "#2db7ad",
+            color: "white",
+            padding: "26px 22px",
+            fontSize: "20px",
             fontWeight: 700,
-            marginBottom: "26px",
-            color: "#111",
           }}
         >
-          {p.name ?? p.LABEL ?? "N/A"}
+          Tree OS
         </div>
 
-        {/* PRIORITY */}
-        <div style={{ marginBottom: "30px" }}>
-          <div
-            style={{
-              color: "#1a8f88",
-              fontSize: "13px",
-              fontWeight: 700,
-              textTransform: "uppercase",
-              letterSpacing: "0.5px",
-              marginBottom: "12px",
-            }}
-          >
-            Priority & Impact
-          </div>
-
-          <div
-            style={{
-              background: "#ffffff",
-              padding: "16px",
-              border: "1px solid #eee",
-              boxShadow: "0 1px 3px rgba(0,0,0,0.08)",
-            }}
-          >
-            <div style={{ display: "flex", justifyContent: "space-between" }}>
-              <span style={{ color: "#555", fontWeight: 500 }}>
-                Priority Score
-              </span>
-              <strong style={{ color: "#111", fontWeight: 600 }}>
-                {p.priority_score?.toFixed?.(2) ?? "N/A"}
-              </strong>
+        <div style={{ padding: "24px 22px" }}>
+          {!selected ? (
+            <div style={{ fontSize: "16px", color: "#555" }}>
+              Click an area on the map to see details.
             </div>
-          </div>
+          ) : (
+            <>
+              <div
+                style={{
+                  fontSize: "22px",
+                  fontWeight: 700,
+                  marginBottom: "26px",
+                  color: "#111",
+                }}
+              >
+                {p.name ?? p.LABEL ?? "N/A"}
+              </div>
+
+              <div style={{ marginBottom: "30px" }}>
+                <div
+                  style={{
+                    color: "#1a8f88",
+                    fontSize: "13px",
+                    fontWeight: 700,
+                    textTransform: "uppercase",
+                    letterSpacing: "0.5px",
+                    marginBottom: "12px",
+                  }}
+                >
+                  Priority & Impact
+                </div>
+
+                <div
+                  style={{
+                    background: "#ffffff",
+                    padding: "16px",
+                    border: "1px solid #eee",
+                    boxShadow: "0 1px 3px rgba(0,0,0,0.08)",
+                  }}
+                >
+                  <div style={{ display: "flex", justifyContent: "space-between" }}>
+                    <span style={{ color: "#555", fontWeight: 500 }}>Priority Score</span>
+                    <strong style={{ color: "#111", fontWeight: 600 }}>
+                      {p.priority_score?.toFixed?.(2) ?? "N/A"}
+                    </strong>
+                  </div>
+                </div>
+              </div>
+
+              <div style={{ marginBottom: "30px" }}>
+                <div
+                  style={{
+                    color: "#1a8f88",
+                    fontSize: "13px",
+                    fontWeight: 700,
+                    textTransform: "uppercase",
+                    letterSpacing: "0.5px",
+                    marginBottom: "12px",
+                  }}
+                >
+                  Community Overview
+                </div>
+
+                <div
+                  style={{
+                    background: "#ffffff",
+                    padding: "16px",
+                    border: "1px solid #eee",
+                    boxShadow: "0 1px 3px rgba(0,0,0,0.08)",
+                  }}
+                >
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      marginBottom: "10px",
+                    }}
+                  >
+                    <span style={{ color: "#555", fontWeight: 500 }}>Population</span>
+                    <strong style={{ color: "#111", fontWeight: 600 }}>
+                      {formatNumber(p.population_2020)}
+                    </strong>
+                  </div>
+
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                    }}
+                  >
+                    <span style={{ color: "#555", fontWeight: 500 }}>Poverty Rate</span>
+                    <strong style={{ color: "#111", fontWeight: 600 }}>
+                      {p.poverty_rate_2020 != null
+                        ? `${Number(p.poverty_rate_2020).toFixed(1)}%`
+                        : "N/A"}
+                    </strong>
+                  </div>
+                </div>
+              </div>
+
+              <div>
+                <div
+                  style={{
+                    color: "#1a8f88",
+                    fontSize: "13px",
+                    fontWeight: 700,
+                    textTransform: "uppercase",
+                    letterSpacing: "0.5px",
+                    marginBottom: "12px",
+                  }}
+                >
+                  Summary
+                </div>
+
+                <div
+                  style={{
+                    background: "#ffffff",
+                    padding: "16px",
+                    border: "1px solid #eee",
+                    boxShadow: "0 1px 3px rgba(0,0,0,0.08)",
+                  }}
+                >
+                  <div style={{ display: "flex", justifyContent: "space-between" }}>
+                    <span style={{ color: "#555", fontWeight: 500 }}>Category</span>
+                    <strong style={{ color: "#111", fontWeight: 600 }}>
+                      {getPanelCategory()}
+                    </strong>
+                  </div>
+                </div>
+              </div>
+            </>
+          )}
         </div>
+      </div>
 
-        {/* COMMUNITY */}
-        <div style={{ marginBottom: "30px" }}>
-          <div
-            style={{
-              color: "#1a8f88",
-              fontSize: "13px",
-              fontWeight: 700,
-              textTransform: "uppercase",
-              letterSpacing: "0.5px",
-              marginBottom: "12px",
-            }}
-          >
-            Community Overview
-          </div>
-
-          <div
-            style={{
-              background: "#ffffff",
-              padding: "16px",
-              border: "1px solid #eee",
-              boxShadow: "0 1px 3px rgba(0,0,0,0.08)",
-            }}
-          >
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                marginBottom: "10px",
-              }}
-            >
-              <span style={{ color: "#555", fontWeight: 500 }}>
-                Population
-              </span>
-              <strong style={{ color: "#111", fontWeight: 600 }}>
-                {formatNumber(p.population_2020)}
-              </strong>
-            </div>
-
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-              }}
-            >
-              <span style={{ color: "#555", fontWeight: 500 }}>
-                Poverty Rate
-              </span>
-              <strong style={{ color: "#111", fontWeight: 600 }}>
-                {p.poverty_rate_2020 != null
-                  ? `${Number(p.poverty_rate_2020).toFixed(1)}%`
-                  : "N/A"}
-              </strong>
-            </div>
-          </div>
-        </div>
-
-        {/* SUMMARY */}
-        <div>
-          <div
-            style={{
-              color: "#1a8f88",
-              fontSize: "13px",
-              fontWeight: 700,
-              textTransform: "uppercase",
-              letterSpacing: "0.5px",
-              marginBottom: "12px",
-            }}
-          >
-            Summary
-          </div>
-
-          <div
-            style={{
-              background: "#ffffff",
-              padding: "16px",
-              border: "1px solid #eee",
-              boxShadow: "0 1px 3px rgba(0,0,0,0.08)",
-            }}
-          >
-            <div style={{ display: "flex", justifyContent: "space-between" }}>
-              <span style={{ color: "#555", fontWeight: 500 }}>
-                Category
-              </span>
-              <strong style={{ color: "#111", fontWeight: 600 }}>
-                {getPanelCategory()}
-              </strong>
-            </div>
-          </div>
-        </div>
-      </>
-    )}
-  </div>
-</div>
-
-    {/* ✅ MAP */}
-    <div
-      ref={mapRef}
-      tabIndex={-1}
-      style={{ flex: 1, height: "100%", outline: "none" }}
-    />
-    
-  </div>
-);
+      <div
+        ref={mapRef}
+        tabIndex={-1}
+        style={{ flex: 1, height: "100%", outline: "none" }}
+      />
+    </div>
+  );
 }
