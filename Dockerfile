@@ -1,11 +1,14 @@
-FROM node:20.16-alphine3.19
+FROM node:20-alpine
 
-WORKDIR /build
+WORKDIR /app
 
-COPY package*.json .
+COPY package*.json ./
+RUN npm install
 
-RUN npm ci --omit=dev && npm cache clean --force
+COPY . .
 
-COPY . . 
+RUN npm run build
 
-EXPOSE 3000 
+EXPOSE 3000
+
+CMD ["npm", "start"]
