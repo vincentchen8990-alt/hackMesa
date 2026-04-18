@@ -1,9 +1,3 @@
-import { GoogleGenAI } from "@google/genai";
-
-const ai = new GoogleGenAI({
-  apiKey: process.env.GEMINI_API_KEY,
-});
-
 function safeValue(value, fallback = "N/A") {
   if (value === null || value === undefined || value === "") return fallback;
   if (typeof value === "number" && Number.isNaN(value)) return fallback;
@@ -61,18 +55,14 @@ Focus on:
 `;
 }
 
+async function loadGoogleGenAI() {
+  const dynamicImport = new Function("specifier", "return import(specifier)");
+  const mod = await dynamicImport("@google/genai");
+  return mod.GoogleGenAI;
+}
+
 export async function POST(request) {
   try {
-    if (!process.env.GEMINI_API_KEY) {
-      return Response.json(
-        {
-          success: false,
-          error: "Missing GEMINI_API_KEY in environment variables.",
-        },
-        { status: 500 }
-      );
-    }
-
     const area = await request.json();
 
     if (!area || typeof area !== "object") {
@@ -85,13 +75,25 @@ export async function POST(request) {
       );
     }
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: buildPrompt(area),
-    });
+    let description = fallbackDescription(area);
 
-    const description =
-      response?.text?.trim() || fallbackDescription(area);
+    if (process.env.GEMINI_API_KEY) {
+      try {
+        const GoogleGenAI = await loadGoogleGenAI();
+        const ai = new GoogleGenAI({
+          apiKey: process.env.GEMINI_API_KEY,
+        });
+
+        const response = await ai.models.generateContent({
+          model: "gemini-3-flash-preview",
+          contents: buildPrompt(area),
+        });
+
+        description = response?.text?.trim() || description;
+      } catch (sdkError) {
+        console.error("Gemini SDK unavailable, using fallback description:", sdkError);
+      }
+    }
 
     return Response.json({
       success: true,

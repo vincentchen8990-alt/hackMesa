@@ -3,41 +3,75 @@
 import { useEffect, useRef, useState } from "react";
 import "leaflet/dist/leaflet.css";
 
-export default function Map() {
-  const mapRef = useRef<HTMLDivElement | null>(null);
-  const mapInstanceRef = useRef<any>(null);
-  const geoJsonLayerRef = useRef<any>(null);
-  const legendRef = useRef<any>(null);
+type FeatureProperties = {
+  id?: string | number;
+  LABEL?: string;
+  name?: string;
+  tree_count?: number | string;
+  priority_score?: number;
+  population_2020?: number | string;
+  median_income?: number | string;
+  canopy_pct?: number | string;
+  heat_index?: number | string;
+};
 
-  const [selected, setSelected] = useState<any>(null);
+type GeoJsonFeature = {
+  type: string;
+  properties?: FeatureProperties;
+  geometry?: unknown;
+};
 
-  function formatNumber(x: number | undefined) {
-    if (x == null || Number.isNaN(x)) return "N/A";
-    return Number(x).toLocaleString();
+type GeoJsonData = {
+  type: string;
+  features?: GeoJsonFeature[];
+};
+
+function formatNumber(value: number | string | undefined) {
+  const parsed = Number(value);
+  if (value == null || Number.isNaN(parsed)) return "N/A";
+  return parsed.toLocaleString();
+}
+
+function formatDecimal(value: number | string | undefined, digits = 2) {
+  const parsed = Number(value);
+  if (value == null || Number.isNaN(parsed)) return "N/A";
+  return parsed.toFixed(digits);
+}
+
+function quantile(values: number[], q: number) {
+  if (!values.length) return 0;
+  const pos = (values.length - 1) * q;
+  const base = Math.floor(pos);
+  const rest = pos - base;
+
+  if (values[base + 1] !== undefined) {
+    return values[base] + rest * (values[base + 1] - values[base]);
   }
 
+  return values[base];
+}
+
+export default function Map() {
+  const mapRef = useRef<HTMLDivElement | null>(null);
+  const [selected, setSelected] = useState<GeoJsonFeature | null>(null);
+  const selectedRef = useRef<GeoJsonFeature | null>(null);
+
   useEffect(() => {
-    let cancelled = false;
+    selectedRef.current = selected;
+  }, [selected]);
+
+  useEffect(() => {
+    let map: any;
+    let geoJsonLayer: any;
 
     async function initMap() {
       if (!mapRef.current) return;
-      if (mapInstanceRef.current) return;
 
       const L = (await import("leaflet")).default;
 
-      if (cancelled || !mapRef.current || mapInstanceRef.current) return;
-
-      // 保险处理：开发模式 / 热更新时，防止旧 leaflet id 残留
-      const container = mapRef.current as any;
-      if (container._leaflet_id) {
-        container._leaflet_id = null;
-      }
-
-      const map = L.map(mapRef.current, {
+      map = L.map(mapRef.current, {
         zoomControl: true,
       }).setView([34.05, -118.25], 9);
-
-      mapInstanceRef.current = map;
 
       L.tileLayer(
         "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png",
@@ -50,27 +84,13 @@ export default function Map() {
       ).addTo(map);
 
       const res = await fetch("/areas.geojson");
-      const data = await res.json();
-
-      if (cancelled || !mapInstanceRef.current) return;
-
+      const data: GeoJsonData = await res.json();
       const features = data.features ?? [];
 
       const treeCounts = features
-        .map((f: any) => Number(f?.properties?.tree_count))
-        .filter((v: number) => !Number.isNaN(v))
-        .sort((a: number, b: number) => a - b);
-
-      function quantile(arr: number[], q: number) {
-        if (!arr.length) return 0;
-        const pos = (arr.length - 1) * q;
-        const base = Math.floor(pos);
-        const rest = pos - base;
-        if (arr[base + 1] !== undefined) {
-          return arr[base] + rest * (arr[base + 1] - arr[base]);
-        }
-        return arr[base];
-      }
+        .map((feature) => Number(feature?.properties?.tree_count))
+        .filter((value) => !Number.isNaN(value))
+        .sort((a, b) => a - b);
 
       const q20 = quantile(treeCounts, 0.2);
       const q40 = quantile(treeCounts, 0.4);
@@ -105,36 +125,38 @@ export default function Map() {
         }
       }
 
-      function getFeatureId(p: any) {
-        return p?.id ?? p?.LABEL ?? p?.name;
+      function getFeatureId(properties: FeatureProperties | undefined) {
+        return properties?.id ?? properties?.LABEL ?? properties?.name ?? "";
       }
 
-      function getDefaultStyle(feature: any, selectedFeature?: any) {
-        const p = feature?.properties ?? {};
-        const treeCount = Number(p.tree_count);
-
-        const selectedId = getFeatureId(selectedFeature?.properties ?? {});
-        const featureId = getFeatureId(p);
+      function getDefaultStyle(
+        feature: GeoJsonFeature | undefined,
+        selectedFeature?: GeoJsonFeature | null
+      ) {
+        const properties = feature?.properties ?? {};
+        const treeCount = Number(properties.tree_count);
+        const selectedId = getFeatureId(selectedFeature?.properties);
+        const featureId = getFeatureId(properties);
+        const isSelected = String(featureId) === String(selectedId);
 
         return {
           stroke: true,
-          color: String(featureId) === String(selectedId) ? "#111111" : "#ffffff",
-          weight: String(featureId) === String(selectedId) ? 3 : 1,
+          color: isSelected ? "#111111" : "#ffffff",
+          weight: isSelected ? 3 : 1,
           fill: true,
           fillColor: getTreeColor(treeCount),
           fillOpacity: 0.35,
         };
       }
 
-      const geoJsonLayer = L.geoJSON(data, {
-        style: (feature: any) => getDefaultStyle(feature, null),
-
-        onEachFeature: (feature: any, layer: any) => {
-          const p = feature?.properties ?? {};
-          const treeCount = Number(p.tree_count);
+      geoJsonLayer = L.geoJSON(data, {
+        style: (feature: GeoJsonFeature) => getDefaultStyle(feature, selected),
+        onEachFeature: (feature: GeoJsonFeature, layer: any) => {
+          const properties = feature?.properties ?? {};
+          const treeCount = Number(properties.tree_count);
 
           layer.on("add", () => {
-            const path = (layer as any)._path;
+            const path = layer?._path;
             if (path) {
               path.setAttribute("tabindex", "-1");
               path.style.outline = "none";
@@ -144,11 +166,11 @@ export default function Map() {
 
           layer.bindTooltip(
             `
-            <div style="min-width: 220px;">
-              <div><strong>Area:</strong> ${p.name ?? p.LABEL ?? "N/A"}</div>
-              <div><strong>Trees:</strong> ${p.tree_count ?? "N/A"}</div>
-              <div><strong>Category:</strong> ${getTreeCategory(treeCount)}</div>
-            </div>
+              <div style="min-width: 220px;">
+                <div><strong>Area:</strong> ${properties.name ?? properties.LABEL ?? "N/A"}</div>
+                <div><strong>Trees:</strong> ${formatNumber(properties.tree_count)}</div>
+                <div><strong>Category:</strong> ${getTreeCategory(treeCount)}</div>
+              </div>
             `,
             {
               sticky: true,
@@ -160,26 +182,30 @@ export default function Map() {
           layer.on({
             click: () => {
               setSelected(feature);
-              geoJsonLayer.setStyle((f: any) => getDefaultStyle(f, feature));
+              geoJsonLayer.setStyle((candidate: GeoJsonFeature) =>
+                getDefaultStyle(candidate, feature)
+              );
             },
-            mouseover: (e: any) => {
-              e.target.setStyle({
+            mouseover: (event: any) => {
+              event.target.setStyle({
                 weight: 2,
                 color: "#ffff00",
                 fillOpacity: 0.55,
               });
             },
-            mouseout: (e: any) => {
-              geoJsonLayer.resetStyle(e.target);
+            mouseout: (event: any) => {
+              geoJsonLayer.resetStyle(event.target);
+              geoJsonLayer.setStyle((candidate: GeoJsonFeature) =>
+                getDefaultStyle(candidate, selectedRef.current)
+              );
             },
           });
         },
       });
 
       geoJsonLayer.addTo(map);
-      geoJsonLayerRef.current = geoJsonLayer;
 
-      if (geoJsonLayer.getBounds().isValid()) {
+      if (geoJsonLayer.getBounds()?.isValid?.()) {
         map.fitBounds(geoJsonLayer.getBounds());
       }
 
@@ -203,18 +229,21 @@ export default function Map() {
 
         div.innerHTML = items
           .map(
-            ([color, label]) =>
-              `<div style="display:flex;align-items:center;gap:10px;">
-                <span style="
-                  width:16px;
-                  height:16px;
-                  border-radius:50%;
-                  display:inline-block;
-                  background:${color};
-                  border:1px solid #ccc;
-                "></span>
+            ([color, label]) => `
+              <div style="display:flex;align-items:center;gap:10px;">
+                <span
+                  style="
+                    width:16px;
+                    height:16px;
+                    border-radius:50%;
+                    display:inline-block;
+                    background:${color};
+                    border:1px solid #ccc;
+                  "
+                ></span>
                 <span>${label}</span>
-              </div>`
+              </div>
+            `
           )
           .join("");
 
@@ -222,38 +251,22 @@ export default function Map() {
       };
 
       legend.addTo(map);
-      legendRef.current = legend;
     }
 
     initMap();
 
     return () => {
-      cancelled = true;
-
-      if (legendRef.current) {
-        legendRef.current.remove();
-        legendRef.current = null;
-      }
-
-      if (geoJsonLayerRef.current) {
-        geoJsonLayerRef.current.remove();
-        geoJsonLayerRef.current = null;
-      }
-
-      if (mapInstanceRef.current) {
-        mapInstanceRef.current.remove();
-        mapInstanceRef.current = null;
-      }
+      if (map) map.remove();
     };
   }, []);
 
-  const p = selected?.properties ?? {};
-
-  function getPanelCategory() {
-    const treeCount = Number(p.tree_count);
-    if (Number.isNaN(treeCount)) return "No Data";
-    return treeCount <= 0 ? "Very Low" : p.tree_count != null ? "Selected" : "No Data";
-  }
+  const properties = selected?.properties ?? {};
+  const treeCount = Number(properties.tree_count);
+  const category = Number.isNaN(treeCount)
+    ? "No Data"
+    : treeCount <= 0
+    ? "Very Low"
+    : "Selected";
 
   return (
     <div style={{ display: "flex", width: "100%", height: "100vh" }}>
@@ -294,7 +307,7 @@ export default function Map() {
                   color: "#111",
                 }}
               >
-                {p.name ?? p.LABEL ?? "N/A"}
+                {properties.name ?? properties.LABEL ?? "N/A"}
               </div>
 
               <div style={{ marginBottom: "30px" }}>
@@ -319,10 +332,29 @@ export default function Map() {
                     boxShadow: "0 1px 3px rgba(0,0,0,0.08)",
                   }}
                 >
-                  <div style={{ display: "flex", justifyContent: "space-between" }}>
-                    <span style={{ color: "#555", fontWeight: 500 }}>Priority Score</span>
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      marginBottom: "10px",
+                    }}
+                  >
+                    <span style={{ color: "#555", fontWeight: 500 }}>
+                      Priority Score
+                    </span>
                     <strong style={{ color: "#111", fontWeight: 600 }}>
-                      {p.priority_score?.toFixed?.(2) ?? "N/A"}
+                      {formatDecimal(properties.priority_score)}
+                    </strong>
+                  </div>
+
+                  <div
+                    style={{ display: "flex", justifyContent: "space-between" }}
+                  >
+                    <span style={{ color: "#555", fontWeight: 500 }}>
+                      Tree Category
+                    </span>
+                    <strong style={{ color: "#111", fontWeight: 600 }}>
+                      {category}
                     </strong>
                   </div>
                 </div>
@@ -357,9 +389,11 @@ export default function Map() {
                       marginBottom: "10px",
                     }}
                   >
-                    <span style={{ color: "#555", fontWeight: 500 }}>Population</span>
+                    <span style={{ color: "#555", fontWeight: 500 }}>
+                      Population
+                    </span>
                     <strong style={{ color: "#111", fontWeight: 600 }}>
-                      {formatNumber(p.population_2020)}
+                      {formatNumber(properties.population_2020)}
                     </strong>
                   </div>
 
@@ -367,13 +401,40 @@ export default function Map() {
                     style={{
                       display: "flex",
                       justifyContent: "space-between",
+                      marginBottom: "10px",
                     }}
                   >
-                    <span style={{ color: "#555", fontWeight: 500 }}>Poverty Rate</span>
+                    <span style={{ color: "#555", fontWeight: 500 }}>
+                      Median Income
+                    </span>
                     <strong style={{ color: "#111", fontWeight: 600 }}>
-                      {p.poverty_rate_2020 != null
-                        ? `${Number(p.poverty_rate_2020).toFixed(1)}%`
-                        : "N/A"}
+                      {formatNumber(properties.median_income)}
+                    </strong>
+                  </div>
+
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      marginBottom: "10px",
+                    }}
+                  >
+                    <span style={{ color: "#555", fontWeight: 500 }}>
+                      Tree Count
+                    </span>
+                    <strong style={{ color: "#111", fontWeight: 600 }}>
+                      {formatNumber(properties.tree_count)}
+                    </strong>
+                  </div>
+
+                  <div
+                    style={{ display: "flex", justifyContent: "space-between" }}
+                  >
+                    <span style={{ color: "#555", fontWeight: 500 }}>
+                      Canopy %
+                    </span>
+                    <strong style={{ color: "#111", fontWeight: 600 }}>
+                      {formatDecimal(properties.canopy_pct)}
                     </strong>
                   </div>
                 </div>
@@ -390,7 +451,7 @@ export default function Map() {
                     marginBottom: "12px",
                   }}
                 >
-                  Summary
+                  Environmental Signals
                 </div>
 
                 <div
@@ -401,10 +462,29 @@ export default function Map() {
                     boxShadow: "0 1px 3px rgba(0,0,0,0.08)",
                   }}
                 >
-                  <div style={{ display: "flex", justifyContent: "space-between" }}>
-                    <span style={{ color: "#555", fontWeight: 500 }}>Category</span>
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      marginBottom: "10px",
+                    }}
+                  >
+                    <span style={{ color: "#555", fontWeight: 500 }}>
+                      Heat Index
+                    </span>
                     <strong style={{ color: "#111", fontWeight: 600 }}>
-                      {getPanelCategory()}
+                      {formatDecimal(properties.heat_index)}
+                    </strong>
+                  </div>
+
+                  <div
+                    style={{ display: "flex", justifyContent: "space-between" }}
+                  >
+                    <span style={{ color: "#555", fontWeight: 500 }}>
+                      Selected Area
+                    </span>
+                    <strong style={{ color: "#111", fontWeight: 600 }}>
+                      {properties.name ?? properties.LABEL ?? "N/A"}
                     </strong>
                   </div>
                 </div>
@@ -414,11 +494,16 @@ export default function Map() {
         </div>
       </div>
 
-      <div
-        ref={mapRef}
-        tabIndex={-1}
-        style={{ flex: 1, height: "100%", outline: "none" }}
-      />
+      <div style={{ flex: 1, position: "relative" }}>
+        <div
+          ref={mapRef}
+          style={{
+            width: "100%",
+            height: "100%",
+            minHeight: "100vh",
+          }}
+        />
+      </div>
     </div>
   );
 }
